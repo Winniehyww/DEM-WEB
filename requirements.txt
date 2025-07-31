@@ -1,4 +1,4 @@
-torch --no-cache-dir
+torch
 numpy
 matplotlib
 streamlit
