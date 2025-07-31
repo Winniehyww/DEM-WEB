@@ -199,6 +199,7 @@ def main():
                     ]
                     if run_backend(args):
                         st.session_state.original_ready = True
+                        st.session_state.mapped_ready = False  # Reset mapped state
                         # Store the current function expression as the previous expression
                         st.session_state.previous_fn_expr = fn_expr
                         # Switch to Original tab
