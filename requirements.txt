@@ -1,0 +1,6 @@
+torch --no-cache-dir
+numpy
+matplotlib
+streamlit
+pandas
+Pillow
