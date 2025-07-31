@@ -74,6 +74,9 @@ def main():
     with col_status:
         if st.session_state.auto_ckpt_loaded or uploaded:
             st.markdown('<div style="background-color: #4CAF50; color: white; padding: 2px 6px; border-radius: 3px; text-align: center; font-size: 12px;">✓</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="background-color: #f44336; color: white; padding: 2px 6px; border-radius: 3px; text-align: center; font-size: 12px;">✗</div>', unsafe_allow_html=True)
+    
     
     # Determine checkpoint path
     if uploaded:
