@@ -3,6 +3,7 @@ import sys
 import json
 import subprocess
 import tempfile
+import glob
 import streamlit as st
 import pandas as pd
 from PIL import Image
@@ -42,41 +43,73 @@ def main():
         st.session_state.original_ready = False
     if 'mapped_ready' not in st.session_state:
         st.session_state.mapped_ready = False
+    if 'auto_ckpt_loaded' not in st.session_state:
+        st.session_state.auto_ckpt_loaded = False
+        st.session_state.auto_ckpt_path = None
 
     # --- Sidebar inputs ---
     st.sidebar.header("Inputs")
-    # Checkpoint upload
-    uploaded = st.sidebar.file_uploader("Upload checkpoint", type=["pth", "pt"])
+    
+    # Auto-load checkpoint from repository
+    def find_auto_checkpoint():
+        """Find and load checkpoint files from the current directory."""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        for ext in ['*.pth', '*.pt']:
+            ckpt_files = glob.glob(os.path.join(current_dir, ext))
+            if ckpt_files:
+                return ckpt_files[0]  # Return the first found checkpoint
+        return None
+    
+    # Try to auto-load checkpoint if not already done
+    if not st.session_state.auto_ckpt_loaded:
+        auto_ckpt = find_auto_checkpoint()
+        if auto_ckpt:
+            st.session_state.auto_ckpt_path = auto_ckpt
+            st.session_state.auto_ckpt_loaded = True
+    
+    # Checkpoint upload with status indicator
+    col_upload, col_status = st.sidebar.columns([3, 1])
+    with col_upload:
+        uploaded = st.file_uploader("Upload checkpoint", type=["pth", "pt"])
+    with col_status:
+        if st.session_state.auto_ckpt_loaded or uploaded:
+            st.markdown('<div style="background-color: #4CAF50; color: white; padding: 2px 6px; border-radius: 3px; text-align: center; font-size: 12px;">✓</div>', unsafe_allow_html=True)
+    
+    # Determine checkpoint path
     if uploaded:
         ckpt_path = os.path.join(st.session_state.temp_dir, uploaded.name)
         with open(ckpt_path, 'wb') as f:
             f.write(uploaded.getbuffer())
+    elif st.session_state.auto_ckpt_loaded and st.session_state.auto_ckpt_path:
+        ckpt_path = st.session_state.auto_ckpt_path
+        # Show info about auto-loaded checkpoint
+        st.sidebar.info(f"Auto-loaded: {os.path.basename(ckpt_path)}")
     else:
         ckpt_path = None
 
     # Function selector (dropdown + editable)
     preset_options = list(TEST_CASES.keys())
-    # 检查是否有自定义项
+    # Check if there is a custom option
     if 'preset_sel' not in st.session_state:
         st.session_state.preset_sel = preset_options[0]
     if 'fn_expr' not in st.session_state:
         st.session_state.fn_expr = TEST_CASES[st.session_state.preset_sel]
     if 'previous_fn_expr' not in st.session_state:
         st.session_state.previous_fn_expr = st.session_state.fn_expr
-    
-    # 定义预设改变时的回调函数
+
+    # Define preset change callback
     def on_preset_change():
         new_sel = st.session_state.preset_selector
         if new_sel != st.session_state.preset_sel:
             st.session_state.preset_sel = new_sel
             if new_sel in TEST_CASES:
-                # 切换到预设选项
+                # switch to preset option
                 st.session_state.fn_expr = TEST_CASES[new_sel]
             else:
-                # 切换到Custom，保留之前的内容
+                # switch to Custom mode
                 st.session_state.fn_expr = st.session_state.previous_fn_expr
     
-    # 定义f(x,y)输入变化时的回调函数
+    # function expression input change callback
     def on_fn_expr_change():
         new_expr = st.session_state.fn_expr_input
         if new_expr != st.session_state.fn_expr:
@@ -85,7 +118,7 @@ def main():
             if st.session_state.preset_sel == "Custom":
                 st.session_state.previous_fn_expr = new_expr
 
-    # 选择框 - 使用key和on_change实现即时交互
+    # Preset selection dropdown
     st.sidebar.selectbox(
         "Preset f(x,y)", 
         options=preset_options + ["Custom"], 
@@ -94,7 +127,7 @@ def main():
         on_change=on_preset_change
     )
     
-    # 文本框 - 如果不是Custom选项则禁用
+    # Custom function input
     is_custom = st.session_state.preset_sel == "Custom"
     if is_custom:
         st.sidebar.text_input(
@@ -111,7 +144,7 @@ def main():
             disabled=True
         )
     
-    # 获取当前的函数表达式
+    # Store the current function expression in session state
     fn_expr = st.session_state.fn_expr
 
     # Grid size and fine-tune epochs
@@ -121,8 +154,8 @@ def main():
     # --- Action buttons ---
     if 'tab_index' not in st.session_state:
         st.session_state.tab_index = 0
-    
-    # 定义标签切换函数
+
+    # Define tab switch function
     def switch_to_tab(tab_name):
         js_code = f"""
         <script>
@@ -143,8 +176,8 @@ def main():
         """
         # Execute the JavaScript code
         st.components.v1.html(js_code, height=0, width=0)
-    
-    # 创建按钮和状态指示器的列布局
+
+    # Create columns for buttons and status indicators
     col1_btn, col1_status, col2_btn, col2_status = st.columns([4, 4, 4, 4])
     
     with col1_btn:
@@ -163,12 +196,12 @@ def main():
                     ]
                     if run_backend(args):
                         st.session_state.original_ready = True
-                        # 保存当前函数表达式作为上一次的表达式
+                        # Store the current function expression as the previous expression
                         st.session_state.previous_fn_expr = fn_expr
-                        # 切换到Original标签页
+                        # Switch to Original tab
                         switch_to_tab("Original")
     
-    # 显示原始域生成状态
+    # Original domain generation status
     with col1_status:
         if st.session_state.original_ready:
             st.markdown('✅', unsafe_allow_html=True)
@@ -189,12 +222,12 @@ def main():
                     ]
                     if run_backend(args):
                         st.session_state.mapped_ready = True
-                        # 保存当前函数表达式作为上一次的表达式
+                        # Store the current function expression as the previous expression
                         st.session_state.previous_fn_expr = fn_expr
-                        # 切换到Mapped标签页
+                        # Switch to Mapped tab
                         switch_to_tab("Mapped")
-    
-    # 显示映射域生成状态
+
+    # Mapped domain generation status
     with col2_status:
         if st.session_state.mapped_ready:
             st.markdown('✅', unsafe_allow_html=True)
@@ -202,16 +235,16 @@ def main():
 
     # --- Tabs for output ---
     tab_labels = ["Original", "Mapped", "Comparison"]
-    
-    # 确保tab_index在有效范围内
+
+    # Ensure tab_index is within valid range
     if 'tab_index' in st.session_state:
         if st.session_state.tab_index < 0 or st.session_state.tab_index >= len(tab_labels):
             st.session_state.tab_index = 0
-    
-    # 获取当前选中的标签页索引
+
+    # Get the current selected tab index
     selected_tab = st.session_state.get('tab_index', 0)
-    
-    # 使用tabs组件创建标签页
+
+    # Create tabs using the tabs component
     tabs = st.tabs(tab_labels)
 
     # Tab: Original
