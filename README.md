@@ -1,4 +1,4 @@
-# My Python App
+# DEM-WEB App
 
 This project implements a density-equalizing mapping application using a neural network model. It consists of a backend for processing and generating domain images, a model definition for the neural network architecture, and a web application for user interaction.
 
