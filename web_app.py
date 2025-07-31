@@ -117,7 +117,7 @@ def main():
         new_expr = st.session_state.fn_expr_input
         if new_expr != st.session_state.fn_expr:
             st.session_state.fn_expr = new_expr
-            # 如果是在Custom模式下
+            # if the preset is Custom, update the previous expression
             if st.session_state.preset_sel == "Custom":
                 st.session_state.previous_fn_expr = new_expr
 
