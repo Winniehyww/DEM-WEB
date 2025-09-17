@@ -29,13 +29,19 @@ def main(args_list=None):
     y = torch.linspace(0,1,N)
     X, Y = torch.meshgrid(x,y, indexing='ij')
     dx = 1.0/(N-1)
-    # safe eval of fn
-    p = eval(args.fn, {'x':X,'y':Y,'torch':torch, 
-                       'sin': np.sin, 'cos': np.cos, 'tan': np.tan,
-                       'exp': np.exp, 'pi': np.pi,
-                       'sqrt': np.sqrt, 'log': np.log,
-                       'abs': np.abs, 'max': np.max, 'min': np.min,
-                       'smooth_blend': smooth_blend})
+
+    fn_str = args.fn.replace('^', '**')  
+    safe_dict = {
+        'x': X, 'y': Y, 'torch': torch, 'np': np,
+        'sin': np.sin, 'cos': np.cos, 'tan': np.tan,
+        'exp': np.exp, 'pi': np.pi,
+        'sqrt': np.sqrt, 'log': np.log,
+        'abs': np.abs, 'max': np.max, 'min': np.min,
+        'smooth_blend': smooth_blend,
+        'pow': lambda a,b: a**b
+    }
+    p = eval(fn_str, safe_dict)
+    
     p = p - p.min() + 0.1
     p = p / (p.sum()*dx*dx)
     faces = make_tri_faces(N)
