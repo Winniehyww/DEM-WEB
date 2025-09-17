@@ -46,27 +46,33 @@ def main():
     if 'auto_ckpt_loaded' not in st.session_state:
         st.session_state.auto_ckpt_loaded = False
         st.session_state.auto_ckpt_path = None
+    if 'auto_ft_ckpt_loaded' not in st.session_state:
+        st.session_state.auto_ft_ckpt_loaded = False
+        st.session_state.auto_ft_ckpt_path = None
 
     # --- Sidebar inputs ---
     st.sidebar.header("Inputs")
     
-    # Auto-load checkpoint from repository
-    def find_auto_checkpoint():
-        """Find and load checkpoint files from the current directory."""
+# Auto-load specific checkpoint files from repository (preferred)
+    def find_specific_checkpoints():
+        """Look for repository-provided checkpoints: unet_dem.pth and ft_unet_dem.pth"""
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        for ext in ['*.pth', '*.pt']:
-            ckpt_files = glob.glob(os.path.join(current_dir, ext))
-            if ckpt_files:
-                return ckpt_files[0]  # Return the first found checkpoint
-        return None
-    
-    # Try to auto-load checkpoint if not already done
-    if not st.session_state.auto_ckpt_loaded:
-        auto_ckpt = find_auto_checkpoint()
-        if auto_ckpt:
+        ckpt_path = os.path.join(current_dir, "unet_dem.pth")
+        ft_ckpt_path = os.path.join(current_dir, "ft_tiny_unet_dem.pth")
+        found_ckpt = ckpt_path if os.path.exists(ckpt_path) else None
+        found_ft = ft_ckpt_path if os.path.exists(ft_ckpt_path) else None
+        return found_ckpt, found_ft
+
+    # Try to auto-load checkpoints if not already done
+    if not st.session_state.auto_ckpt_loaded or not st.session_state.auto_ft_ckpt_loaded:
+        auto_ckpt, auto_ft = find_specific_checkpoints()
+        if auto_ckpt and not st.session_state.auto_ckpt_loaded:
             st.session_state.auto_ckpt_path = auto_ckpt
             st.session_state.auto_ckpt_loaded = True
-    
+        if auto_ft and not st.session_state.auto_ft_ckpt_loaded:
+            st.session_state.auto_ft_ckpt_path = auto_ft
+            st.session_state.auto_ft_ckpt_loaded = True
+   
     # Checkpoint upload with status indicator
     col_upload, col_status = st.sidebar.columns([3, 1])
     with col_upload:
@@ -89,6 +95,13 @@ def main():
         st.sidebar.info(f"Auto-loaded: {os.path.basename(ckpt_path)}")
     else:
         ckpt_path = None
+
+    # Determine fine-tune checkpoint path (auto-loaded if available)
+    if st.session_state.auto_ft_ckpt_loaded and st.session_state.auto_ft_ckpt_path:
+        ft_ckpt_path = st.session_state.auto_ft_ckpt_path
+        st.sidebar.info(f"Auto-loaded fine-tune ckpt: {os.path.basename(ft_ckpt_path)}")
+    else:
+        ft_ckpt_path = None
 
     # Function selector (dropdown + editable)
     preset_options = list(TEST_CASES.keys())
@@ -152,7 +165,7 @@ def main():
 
     # Grid size and fine-tune epochs
     n_test = st.sidebar.slider("Grid size N_test", 16, 512, 128)
-    ft_epochs = st.sidebar.slider("Fine-tune epochs", 0, 50, 20)
+    ft_epochs = st.sidebar.slider("Fine-tune epochs", 0, 100, 0)
 
     # --- Action buttons ---
     if 'tab_index' not in st.session_state:
@@ -192,6 +205,7 @@ def main():
                     args = [
                         "--mode", "original",
                         "--ckpt", ckpt_path,
+                        "--ft_ckpt", ft_ckpt_path,
                         "--fn", fn_expr,
                         "--N", str(n_test),
                         "--out", st.session_state.temp_dir,
@@ -219,6 +233,7 @@ def main():
                     args = [
                         "--mode", "mapped",
                         "--ckpt", ckpt_path,
+                        "--ft_ckpt", ft_ckpt_path,
                         "--fn", fn_expr,
                         "--N", str(n_test),
                         "--out", st.session_state.temp_dir,

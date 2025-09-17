@@ -99,6 +99,112 @@ def init_identity_model(model: nn.Module) -> None:
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
+def _pick_gn_groups(c: int) -> int:
+    for g in (8, 4, 2):
+        if c % g == 0:
+            return g
+    return 1
+
+class SepConv2d(nn.Module):
+    """Depthwise separable 3x3 -> 1x1 conv with reflect padding."""
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.dw = nn.Conv2d(in_ch, in_ch, 3, padding=1, padding_mode="reflect",
+                            groups=in_ch, bias=False)
+        self.pw = nn.Conv2d(in_ch, out_ch, 1, bias=False)
+        self.gn = nn.GroupNorm(_pick_gn_groups(out_ch), out_ch)
+        self.act = nn.SiLU()
+
+    def forward(self, x) -> torch.Tensor:
+        x = self.dw(x)
+        x = self.pw(x)
+        x = self.gn(x)
+        return self.act(x)
+
+class TinyDoubleSep(nn.Module):
+    """Two separable convs, lightweight replacement for DoubleConv."""
+    def __init__(self, in_ch, out_ch, mid_ch=None):
+        super().__init__()
+        if mid_ch is None:
+            mid_ch = out_ch
+        self.block = nn.Sequential(
+            SepConv2d(in_ch, mid_ch),
+            SepConv2d(mid_ch, out_ch),
+        )
+    def forward(self, x) -> torch.Tensor:
+        return self.block(x)
+
+class TinyUNet(nn.Module):
+    """
+    Smaller U-Net (fixed skips + exact output size):
+      - Depth = 2 downs / 2 ups
+      - Base channels = 8 by default
+      - Depthwise-separable convs
+      - Bilinear upsample + 1x1 conv
+      - Output: Tanh, 2 channels, same HxW as input
+    """
+    def __init__(self, in_channels=3, out_channels=2, base_channels=4):
+        super().__init__()
+        c = base_channels
+
+        # Encoder
+        self.inc   = TinyDoubleSep(in_channels, c)          # [H,W] -> c
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), TinyDoubleSep(c, 2*c))   # -> [H//2,W//2]
+        self.down2 = nn.Sequential(nn.MaxPool2d(2), TinyDoubleSep(2*c, 4*c)) # -> [H//4,W//4]
+
+        # Bottleneck (same spatial as down2)
+        self.bot = TinyDoubleSep(4*c, 8*c)  # [H//4,W//4]
+
+        # Decoder
+        self.up1 = nn.Sequential(  # [H//4 -> H//2]
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(8*c, 4*c, kernel_size=1, bias=False),
+        )
+        # concat with x2 (2c) -> channels 4c + 2c = 6c
+        self.dec1 = TinyDoubleSep(6*c, 4*c)
+
+        self.up2 = nn.Sequential(  # [H//2 -> ~H]
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(4*c, 2*c, kernel_size=1, bias=False),
+        )
+        # concat with x1 (c) -> channels 2c + c = 3c
+        self.dec2 = TinyDoubleSep(3*c, 2*c)
+
+        self.outc = nn.Sequential(
+            nn.Conv2d(2*c, out_channels, kernel_size=3, padding=1, padding_mode="reflect"),
+            nn.Tanh()
+        )
+
+    def forward(self, x):
+        H, W = x.shape[-2], x.shape[-1]
+
+        # Encoder
+        x1 = self.inc(x)     # [H,W], c
+        x2 = self.down1(x1)  # [H//2,W//2], 2c
+        x3 = self.down2(x2)  # [H//4,W//4], 4c
+
+        # Bottleneck
+        xb = self.bot(x3)    # [H//4,W//4], 8c
+
+        # Decoder
+        y = self.up1(xb)                                   # ~[H//2,W//2], 4c
+        if y.shape[2:] != x2.shape[2:]:
+            y = F.interpolate(y, size=x2.shape[2:], mode='bilinear', align_corners=False)
+        y = torch.cat([y, x2], dim=1)                      # 6c
+        y = self.dec1(y)                                   # 4c
+
+        y = self.up2(y)                                    # ~[H,W], 2c
+        if y.shape[2:] != x1.shape[2:]:
+            y = F.interpolate(y, size=x1.shape[2:], mode='bilinear', align_corners=False)
+        y = torch.cat([y, x1], dim=1)                      # 3c
+        y = self.dec2(y)                                   # 2c
+
+        # Guarantee exact match with input spatial size (handles odd sizes like 65)
+        if y.shape[-2:] != (H, W):
+            y = F.interpolate(y, size=(H, W), mode='bilinear', align_corners=False)
+
+        return self.outc(y)
+
 
 def relu(x: float) -> float:
     return max(x, 0.0)
@@ -234,4 +340,55 @@ def optimize_refinement_weight(model: nn.Module,
             fd = loss_at(d)
     alpha_opt = (a + b) / 2
     loss_opt  = loss_at(alpha_opt)
+    return alpha_opt, loss_opt
+
+def optimize_refinement_weight_ft(model, ft_model,
+                               X, Y, p, faces, dx,
+                               lb=0.1, ub=3.0, tol=1e-4, max_iter=50) -> tuple:
+    u_init, v_init = model(torch.stack([X, Y, p], dim=0).unsqueeze(0))[0]
+    u_init = X + X * (1 - X) * u_init
+    v_init = Y + Y * (1 - Y) * v_init
+    ft_u_init, ft_v_init = ft_model(torch.stack([u_init, v_init, p], dim=0).unsqueeze(0))[0]
+    ft_u_init = u_init + u_init * (1 - u_init) * ft_u_init
+    ft_v_init = v_init + v_init * (1 - v_init) * ft_v_init
+    m_init = compute_mapping_quality(X, Y, p, ft_u_init, ft_v_init, faces, dx)
+
+    a = lb
+    b = ub
+    
+    if (m_init['beltrami_max'] >= 1):
+        b = 1.0  # If initial mapping is already bad, start with a lower b
+    
+    gr = (math.sqrt(5) + 1) / 2
+    c = b - (b - a) / gr
+    d = a + (b - a) / gr
+
+    def loss_at(alpha):
+        u, v = model(torch.stack([X, Y, p], dim=0).unsqueeze(0))[0]
+        u = X + X * (1 - X) * u * alpha
+        v = Y + Y * (1 - Y) * v * alpha
+        ft_u, ft_v = ft_model(torch.stack([u, v, p], dim=0).unsqueeze(0))[0]
+        ft_u = u + u * (1 - u) * ft_u
+        ft_v = v + v * (1 - v) * ft_v
+        m = compute_mapping_quality(X, Y, p, ft_u, ft_v, faces, dx)
+        return m['density_error'] + 1e3*relu(m['beltrami_max'] - 1)
+
+    fc, fd = loss_at(c), loss_at(d)
+
+    for _ in range(max_iter):
+        if abs(b - a) < tol:
+            break
+        if fc < fd:
+            b, fd = d, fc
+            d = c
+            c = b - (b - a) / gr
+            fc = loss_at(c)
+        else:
+            a, fc = c, fd
+            c = d
+            d = a + (b - a) / gr
+            fd = loss_at(d)
+
+    alpha_opt = (a + b) / 2
+    loss_opt = loss_at(alpha_opt)
     return alpha_opt, loss_opt
